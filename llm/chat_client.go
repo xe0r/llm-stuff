@@ -149,7 +149,8 @@ func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
 		c.req.Messages = append(c.req.Messages, *choice.Message)
 
 		switch strings.ToLower(choice.FinishReason) {
-		case "stop":
+		case "stop", "":
+			// It seems that some models don't send finish reason, at least in the stream mode			
 			return c.convertResult(choice.Message.Content)
 		case "tool_calls":
 			err := c.handleToolCalls(choice.Message.ToolCalls)

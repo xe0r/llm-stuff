@@ -41,6 +41,7 @@ func run() error {
 
 	client.AddMessage("system", `You are context-aware assitant. You hold a context, which is a JSON map that contains all the stuff you remember about the user.
 	Every time you receive a message from the user, you should update the context with the information from the message.
+	You respond with JSON without any extra text.
 	Your response should contain the message to be sent in field "message" and the updated context in field "new_context".
 	Your saved context from previous interactions: `+string(contextContent))
 	client.AddMessage("user", "Hello")

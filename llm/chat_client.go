@@ -47,12 +47,12 @@ func NewChatClientWithType[T any](token string, funcs []CallableFunction) *ChatC
 	}
 
 	ty := reflect.TypeOf((*T)(nil)).Elem()
-
-	if ty.Kind() == reflect.String {
+	switch ty.Kind() {
+	case reflect.String:
 		req.ResponseFormat.Type = "text"
-	} else if ty.Kind() == reflect.Map {
+	case reflect.Map:
 		req.ResponseFormat.Type = "json_object"
-	} else {
+	default:
 		req.ResponseFormat.Type = "json_schema"
 		req.ResponseFormat.JSONSchema = &JSONSchema{
 			Name:   "response",
@@ -148,33 +148,32 @@ func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
 
 		c.req.Messages = append(c.req.Messages, *choice.Message)
 
-		finishReason := strings.ToLower(choice.FinishReason)
-
-		if finishReason == "stop" {
-			tv := reflect.ValueOf(&result).Elem()
-			if tv.Kind() == reflect.String {
-				tv.SetString(choice.Message.Content)
-				return result, nil
-			}
-
-			if err := json.Unmarshal([]byte(choice.Message.Content), &result); err != nil {
-				return result, err
-			}
-			return result, nil
-		}
-
-		if finishReason == "tool_calls" {
+		switch strings.ToLower(choice.FinishReason) {
+		case "stop":
+			return c.convertResult(choice.Message.Content)
+		case "tool_calls":
 			err := c.handleToolCalls(choice.Message.ToolCalls)
 			if err != nil {
 				return result, err
 			}
-
-			continue
+		default:
+			return result, fmt.Errorf("unknown finish reason %s", choice.FinishReason)
 		}
-
-		return result, fmt.Errorf("unknown finish reason %s", finishReason)
-
 	}
+}
+
+func (c *ChatClient[T]) convertResult(content string) (T, error) {
+	result := *new(T)
+	tv := reflect.ValueOf(&result).Elem()
+	if tv.Kind() == reflect.String {
+		tv.SetString(content)
+		return result, nil
+	}
+
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (c *ChatClient[T]) handleToolCalls(toolCalls []ToolCall) error {

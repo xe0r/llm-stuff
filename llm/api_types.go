@@ -74,7 +74,8 @@ type ToolChoice struct {
 }
 
 type ResponseFormat struct {
-	Type string `json:"type"`
+	Type       string      `json:"type"`
+	JSONSchema *JSONSchema `json:"json_schema,omitempty"`
 }
 
 type ProviderPreferences struct {
@@ -122,4 +123,10 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+type JSONSchema struct {
+	Name   string `json:"name"`
+	Schema any    `json:"schema"`
+	Strict bool   `json:"strict"`
 }

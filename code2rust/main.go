@@ -26,17 +26,19 @@ func run() error {
 	client.AddMessage("system", "You are code conversion tool. You convert code from any language to Rust. You respond with the converted code without any comments or markdown.")
 	client.AddMessage("user", string(stdinContent))
 
-	chunkChan := make(chan *llm.Response)
+	chunkChan := make(chan string)
+	doneChan := make(chan struct{})
 
 	go func() {
+		defer close(doneChan)
 		for chunk := range chunkChan {
-			//fmt.Println(chunk)
-			fmt.Print(chunk.Choices[0].Delta.Content)
+			fmt.Print(chunk)
 		}
 		fmt.Println()
 	}()
 
 	resp, err := client.GetResponse(chunkChan)
+	<-doneChan
 	if err != nil {
 		return err
 	}

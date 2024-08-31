@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 )
 
@@ -32,7 +33,7 @@ func mergeResponse(base, update *Response) *Response {
 		base.Object, _ = strings.CutSuffix(base.Object, ".chunk")
 
 		base.Choices = make([]Choice, len(update.Choices))
-		
+
 		for i := range base.Choices {
 			base.Choices[i] = update.Choices[i]
 			base.Choices[i].Message = &Message{}
@@ -54,11 +55,10 @@ func mergeResponse(base, update *Response) *Response {
 	if base.Usage == nil && update.Usage != nil {
 		base.Usage = &Usage{}
 		*base.Usage = *update.Usage
-	} 
+	}
 
 	return base
 }
-
 
 func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*Response, error) {
 	req.Stream = true
@@ -81,7 +81,7 @@ func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*R
 	go func() {
 		defer close(errChan)
 		defer close(responseChan)
-		
+
 		defer close(chunkChan)
 
 		var response *Response
@@ -116,6 +116,8 @@ func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*R
 				continue
 			}
 
+			logMessage("Chunk: ", kind, data)
+
 			if kind != "data" {
 				//fmt.Printf("%s: %s\n", kind, data)
 				kind, data = "", ""
@@ -141,7 +143,7 @@ func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*R
 
 			chunkChan <- &resp
 		}
-	} ()
+	}()
 
 	select {
 	case err := <-errChan:
@@ -213,14 +215,18 @@ func (c *Client) sendRequest(req *Request, reqURL string) (*http.Response, error
 	return httpResp, nil
 }
 
-type ChatClient struct {
+type ChatClient[T any] struct {
 	client   *Client
 	funcs    []CallableFunction
 	funcsMap map[string]CallableFunction
 	req      *Request
 }
 
-func NewChatClient(token string, funcs []CallableFunction) *ChatClient {
+func NewChatClient(token string, funcs []CallableFunction) *ChatClient[string] {
+	return NewChatClientWithType[string](token, funcs)
+}
+
+func NewChatClientWithType[T any](token string, funcs []CallableFunction) *ChatClient[T] {
 	client := NewClient(token)
 
 	tools := make([]Tool, 0, len(funcs))
@@ -246,12 +252,24 @@ func NewChatClient(token string, funcs []CallableFunction) *ChatClient {
 	req := &Request{
 		Tools:      tools,
 		ToolChoice: toolChoice,
-		ResponseFormat: ResponseFormat{
-			Type: "text",
-		},
 	}
 
-	return &ChatClient{
+	ty := reflect.TypeOf((*T)(nil)).Elem()
+
+	if ty.Kind() == reflect.String {
+		req.ResponseFormat.Type = "text"
+	} else if ty.Kind() == reflect.Map {
+		req.ResponseFormat.Type = "json_object"
+	} else {
+		req.ResponseFormat.Type = "json_schema"
+		req.ResponseFormat.JSONSchema = &JSONSchema{
+			Name:   "response",
+			Strict: true,
+			Schema: getParamDef(ty),
+		}
+	}
+
+	return &ChatClient[T]{
 		client: client,
 
 		funcs:    funcs,
@@ -260,45 +278,73 @@ func NewChatClient(token string, funcs []CallableFunction) *ChatClient {
 	}
 }
 
-func (c *ChatClient) SetModel(model string) {
+func (c *ChatClient[T]) SetModel(model string) {
 	c.req.Model = model
 }
 
-func (c *ChatClient) AddMessage(role string, content string) {
+// Some models don't support JSON Schema, or generate it incorrectly
+func (c *ChatClient[T]) SetObjectResponse() {
+	c.req.ResponseFormat.Type = "json_object"
+	c.req.ResponseFormat.JSONSchema = nil
+}
+
+func (c *ChatClient[T]) AddMessage(role string, content string) {
 	c.req.Messages = append(c.req.Messages, Message{
 		Role:    role,
 		Content: content,
 	})
 }
 
-func (c *ChatClient) GetResponse(chunkChan chan<- *Response) (string, error) {
+func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
+	if chunkChan != nil {
+		defer close(chunkChan)
+	}
+
+	result := *new(T)
 	if c.req.Model == "" {
-		return "", fmt.Errorf("model not set")
+		return result, fmt.Errorf("model not set")
 	}
 	for {
 		var resp *Response
 		var err error
 		if chunkChan != nil {
-			resp, err = c.client.SendStreamRequest(c.req, chunkChan)
+			subChunkChan := make(chan *Response)
+
+			go func() {
+				for chunk := range subChunkChan {
+					if len(chunk.Choices) > 0 {
+						chunkChan <- chunk.Choices[0].Delta.Content
+					}
+				}
+			}()
+			resp, err = c.client.SendStreamRequest(c.req, subChunkChan)
 		} else {
 			resp, err = c.client.SendRequest(c.req)
 		}
 		if err != nil {
-			return "", err
+			return result, err
 		}
 
 		if resp.Code != 0 {
-			return "", fmt.Errorf("error code %d", resp.Code)
+			return result, fmt.Errorf("error code %d", resp.Code)
+		}
+
+		if resp.Error.Message != "" {
+			return result, fmt.Errorf("error: %s", resp.Error.Message)
+		}
+
+		if len(resp.Choices) == 0 {
+			return result, fmt.Errorf("no choices")
 		}
 
 		if len(resp.Choices) != 1 {
-			return "", fmt.Errorf("invalid number of choices")
+			fmt.Printf("multiple choices: %#v\n", resp.Choices)
 		}
 
 		choice := resp.Choices[0]
 
 		if choice.Message == nil {
-			return "", fmt.Errorf("no message")
+			return result, fmt.Errorf("no message")
 		}
 
 		c.req.Messages = append(c.req.Messages, *choice.Message)
@@ -306,22 +352,33 @@ func (c *ChatClient) GetResponse(chunkChan chan<- *Response) (string, error) {
 		finishReason := strings.ToLower(choice.FinishReason)
 
 		if finishReason == "stop" {
-			return choice.Message.Content, nil
+			tv := reflect.ValueOf(&result).Elem()
+			if tv.Kind() == reflect.String {
+				tv.SetString(choice.Message.Content)
+				return result, nil
+			}
+
+			if err := json.Unmarshal([]byte(choice.Message.Content), &result); err != nil {
+				return result, err
+			}
+			return result, nil
 		}
 
 		if finishReason == "tool_calls" {
 			err := c.handleToolCalls(choice.Message.ToolCalls)
 			if err != nil {
-				return "", err
+				return result, err
 			}
 
 			continue
 		}
 
+		return result, fmt.Errorf("unknown finish reason %s", finishReason)
+
 	}
 }
 
-func (c *ChatClient) handleToolCalls(toolCalls []ToolCall) error {
+func (c *ChatClient[T]) handleToolCalls(toolCalls []ToolCall) error {
 	for _, toolCall := range toolCalls {
 		fn, ok := c.funcsMap[toolCall.Function.Name]
 		if !ok {
@@ -343,11 +400,12 @@ func (c *ChatClient) handleToolCalls(toolCalls []ToolCall) error {
 
 // Subset of JSON Schema
 type ParamDef struct {
-	Type        string                 `json:"type"`
-	Description string                 `json:"description,omitempty"`
-	Properties  map[string]interface{} `json:"properties,omitempty"`
-	Items       any                    `json:"items,omitempty"`
-	Required    []string               `json:"required,omitempty"`
+	Type               string                 `json:"type"`
+	Description        string                 `json:"description,omitempty"`
+	Properties         map[string]interface{} `json:"properties,omitempty"`
+	Items              any                    `json:"items,omitempty"`
+	Required           []string               `json:"required,omitempty"`
+	AdditionProperties bool                   `json:"additionalProperties"`
 }
 
 type CallableFunction interface {

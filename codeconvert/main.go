@@ -9,7 +9,7 @@ import (
 	"github.com/xe0r/llm-stuff/llm"
 )
 
-func doit(inputName, outputName, language string) error {
+func doit(inputName, outputName, language, model string) error {
 	var input io.ReadCloser
 	var output io.WriteCloser
 
@@ -46,10 +46,7 @@ func doit(inputName, outputName, language string) error {
 
 	client := llm.NewChatClient(token, nil)
 
-	client.SetModel("openai/gpt-4o-mini")
-	//client.SetModel("meta-llama/llama-3-70b-instruct")
-	//client.SetModel("mistralai/mistral-7b-instruct")
-	//client.SetModel("google/gemini-flash-1.5")
+	client.SetModel(model)
 
 	client.AddMessage("system", fmt.Sprintf("You are code conversion tool. You convert code from any language to %s. You respond with the converted code without any comments or markdown.", language))
 	client.AddMessage("user", string(content))
@@ -82,18 +79,20 @@ func main() {
 		inputName  string
 		outputName string
 		language   string
+		model      string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "codeconvert",
 		Short: "Convert code from one language to another",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return doit(inputName, outputName, language)
+			return doit(inputName, outputName, language, model)
 		},
 	}
 	cmd.Flags().StringVarP(&inputName, "input", "i", "", "Input file name")
 	cmd.Flags().StringVarP(&outputName, "output", "o", "", "Output file name")
 	cmd.Flags().StringVarP(&language, "language", "l", "Go", "Language to convert to")
+	cmd.Flags().StringVarP(&model, "model", "m", "openai/gpt-4o-mini", "Model to use")
 
 	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

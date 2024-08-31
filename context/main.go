@@ -28,6 +28,8 @@ func run() error {
 
 	client := llm.NewChatClientWithType[Response](token, nil)
 
+	client.SetLogger(llm.DefaultLogger)
+
 	//client.SetModel("mistralai/mistral-nemo")
 
 	client.SetModel("openai/gpt-4o-mini")

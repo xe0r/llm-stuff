@@ -15,6 +15,7 @@ type Client struct {
 	client  *http.Client
 	token   string
 	baseURL string
+	logger Logger
 }
 
 func NewClient(token string) *Client {
@@ -58,6 +59,10 @@ func mergeResponse(base, update *Response) *Response {
 	}
 
 	return base
+}
+
+func (c *Client) SetLogger(logger Logger) {
+	c.logger = logger
 }
 
 func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*Response, error) {
@@ -116,7 +121,9 @@ func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*R
 				continue
 			}
 
-			logMessage("Chunk: ", kind, data)
+			if c.logger != nil {
+			  c.logger.Log("Chunk: ", kind, data)
+			}
 
 			if kind != "data" {
 				//fmt.Printf("%s: %s\n", kind, data)
@@ -175,7 +182,9 @@ func (c *Client) SendRequest(req *Request) (*Response, error) {
 		return nil, err
 	}
 
-	logMessage("Response: ", string(body))
+	if c.logger != nil {
+		c.logger.Log("Response: ", string(body))
+	}
 
 	var resp Response
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -191,7 +200,9 @@ func (c *Client) sendRequest(req *Request, reqURL string) (*http.Response, error
 		return nil, err
 	}
 
-	logMessage("Request: ", string(reqJSON))
+	if c.logger != nil {
+		c.logger.Log("Request: ", string(reqJSON))
+	}
 
 	httpReq, err := http.NewRequest("POST", reqURL, bytes.NewBuffer(reqJSON))
 
@@ -278,6 +289,10 @@ func NewChatClientWithType[T any](token string, funcs []CallableFunction) *ChatC
 	}
 }
 
+func (c *ChatClient[T]) SetLogger(logger Logger) {
+	c.client.SetLogger(logger)
+}
+
 func (c *ChatClient[T]) SetModel(model string) {
 	c.req.Model = model
 }
@@ -309,8 +324,10 @@ func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
 		var err error
 		if chunkChan != nil {
 			subChunkChan := make(chan *Response)
+			doneChan := make(chan struct{})
 
 			go func() {
+				defer close(doneChan)
 				for chunk := range subChunkChan {
 					if len(chunk.Choices) > 0 {
 						chunkChan <- chunk.Choices[0].Delta.Content
@@ -318,6 +335,7 @@ func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
 				}
 			}()
 			resp, err = c.client.SendStreamRequest(c.req, subChunkChan)
+			<-doneChan
 		} else {
 			resp, err = c.client.SendRequest(c.req)
 		}

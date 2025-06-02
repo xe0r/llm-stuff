@@ -92,10 +92,17 @@ func (c *ChatClient[T]) AddMessage(role string, content string) {
 }
 
 func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
-	if chunkChan != nil {
-		defer close(chunkChan)
+	if chunkChan == nil {
+		return c.GetResponseWithCB(nil)
 	}
 
+	defer close(chunkChan)
+	return c.GetResponseWithCB(func(chunk string) {
+		chunkChan <- chunk
+	})
+}
+
+func (c *ChatClient[T]) GetResponseWithCB(chunkFunc func(string)) (T, error) {
 	result := *new(T)
 	if c.req.Model == "" {
 		return result, fmt.Errorf("model not set")
@@ -103,20 +110,10 @@ func (c *ChatClient[T]) GetResponse(chunkChan chan<- string) (T, error) {
 	for {
 		var resp *Response
 		var err error
-		if chunkChan != nil {
-			subChunkChan := make(chan *Response)
-			doneChan := make(chan struct{})
-
-			go func() {
-				defer close(doneChan)
-				for chunk := range subChunkChan {
-					if len(chunk.Choices) > 0 {
-						chunkChan <- chunk.Choices[0].Delta.Content
-					}
-				}
-			}()
-			resp, err = c.client.SendStreamRequest(c.req, subChunkChan)
-			<-doneChan
+		if chunkFunc != nil {
+			resp, err = c.client.SendStreamRequestWithCB(c.req, func(resp *Response) {
+				chunkFunc(resp.Choices[0].Delta.Content)
+			})
 		} else {
 			resp, err = c.client.SendRequest(c.req)
 		}

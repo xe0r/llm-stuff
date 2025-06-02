@@ -64,6 +64,14 @@ func (c *Client) SetLogger(logger Logger) {
 }
 
 func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*Response, error) {
+	defer close(chunkChan)
+
+	return c.SendStreamRequestWithCB(req, func(resp *Response) {
+		chunkChan <- resp
+	})
+}
+
+func (c *Client) SendStreamRequestWithCB(req *Request, chunkFunc func(*Response)) (*Response, error) {
 	req.Stream = true
 	reqURL := c.baseURL + "chat/completions"
 
@@ -71,73 +79,51 @@ func (c *Client) SendStreamRequest(req *Request, chunkChan chan<- *Response) (*R
 	if err != nil {
 		return nil, err
 	}
+	defer httpResp.Body.Close()
 
 	contentType := httpResp.Header.Get("Content-Type")
 
 	if contentType != "text/event-stream" {
+		httpResp.Body.Close()
 		return nil, fmt.Errorf("expected stream, got %s", contentType)
 	}
 
-	errChan := make(chan error, 1)
-	responseChan := make(chan *Response, 1)
+	var response *Response
 
-	go func() {
-		defer close(errChan)
-		defer close(responseChan)
+	reader := NewSSEReader(httpResp.Body)
 
-		response, err := func() (*Response, error) {
-			defer close(chunkChan)
-
-			var response *Response
-
-			reader := NewSSEReader(httpResp.Body)
-
-			for {
-				event, err := reader.ReadEvent()
-				if err != nil {
-					if err != io.EOF {
-						errChan <- err
-					}
-
-					return response, nil
-				}
-
-				if event.Event != "" {
-					continue
-				}
-
-				data := event.Data
-
-				if c.logger != nil {
-					c.logger.Log("Chunk: ", data)
-				}
-
-				if data == "[DONE]" {
-					return response, nil
-				}
-
-				var resp Response
-				if err := json.Unmarshal([]byte(data), &resp); err != nil {
-					return nil, err
-				}
-
-				response = mergeResponse(response, &resp)
-
-				chunkChan <- &resp
-			}
-		}()
+	for {
+		event, err := reader.ReadEvent()
 		if err != nil {
-			errChan <- err
-		} else {
-			responseChan <- response
-		}
-	}()
+			if err != io.EOF {
+				return nil, fmt.Errorf("error reading SSE event: %w", err)
+			}
 
-	select {
-	case err := <-errChan:
-		return nil, err
-	case resp := <-responseChan:
-		return resp, nil
+			return response, nil
+		}
+
+		if event.Event != "" {
+			continue
+		}
+
+		data := event.Data
+
+		if c.logger != nil {
+			c.logger.Log("Chunk: ", data)
+		}
+
+		if data == "[DONE]" {
+			return response, nil
+		}
+
+		var resp Response
+		if err := json.Unmarshal([]byte(data), &resp); err != nil {
+			return nil, err
+		}
+
+		response = mergeResponse(response, &resp)
+
+		chunkFunc(&resp)
 	}
 }
 
